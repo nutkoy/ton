@@ -23,6 +23,7 @@
 #include "validator-session/validator-session.h"
 
 #include "rldp/rldp.h"
+#include "rldp2/rldp.h"
 
 #include <list>
 
@@ -41,14 +42,15 @@ class ValidatorGroup : public td::actor::Actor {
                               std::vector<BlockSignature> approve_signatures,
                               validatorsession::ValidatorSessionStats stats, td::Promise<td::Unit> promise);
   void skip_round(td::uint32 round);
-  void retry_accept_block_query(BlockIdExt block_id, td::Ref<BlockData> block, std::vector<BlockIdExt> prev,
-                                td::Ref<BlockSignatureSet> sigs, td::Ref<BlockSignatureSet> approve_sigs,
-                                td::Promise<td::Unit> promise);
+  void accept_block_query(BlockIdExt block_id, td::Ref<BlockData> block, std::vector<BlockIdExt> prev,
+                          td::Ref<BlockSignatureSet> sigs, td::Ref<BlockSignatureSet> approve_sigs,
+                          bool send_broadcast, td::Promise<td::Unit> promise, bool is_retry = false);
   void get_approved_candidate(PublicKey source, RootHash root_hash, FileHash file_hash,
                               FileHash collated_data_file_hash, td::Promise<BlockCandidate> promise);
+  BlockId create_next_block_id_simple() const;
   BlockIdExt create_next_block_id(RootHash root_hash, FileHash file_hash) const;
 
-  void start(std::vector<BlockIdExt> prev, BlockIdExt min_masterchain_block_id, UnixTime min_ts);
+  void start(std::vector<BlockIdExt> prev, BlockIdExt min_masterchain_block_id);
   void create_session();
   void destroy();
   void start_up() override {
@@ -58,16 +60,21 @@ class ValidatorGroup : public td::actor::Actor {
     }
   }
 
+  void get_session_info(td::Promise<tl_object_ptr<ton_api::engine_validator_validatorSessionInfo>> promise);
+
   ValidatorGroup(ShardIdFull shard, PublicKeyHash local_id, ValidatorSessionId session_id,
-                 td::Ref<ValidatorSet> validator_set, validatorsession::ValidatorSessionOptions config,
+                 td::Ref<ValidatorSet> validator_set, block::CollatorConfig collator_config,
+                 validatorsession::ValidatorSessionOptions config,
                  td::actor::ActorId<keyring::Keyring> keyring, td::actor::ActorId<adnl::Adnl> adnl,
-                 td::actor::ActorId<rldp::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
+                 td::actor::ActorId<rldp2::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
                  std::string db_root, td::actor::ActorId<ValidatorManager> validator_manager, bool create_session,
-                 bool allow_unsafe_self_blocks_resync)
+                 bool allow_unsafe_self_blocks_resync,
+                 ValidatorManagerOptions::ValidatorMode mode = ValidatorManagerOptions::validator_normal)
       : shard_(shard)
       , local_id_(std::move(local_id))
       , session_id_(session_id)
       , validator_set_(std::move(validator_set))
+      , collator_config_(std::move(collator_config))
       , config_(std::move(config))
       , keyring_(keyring)
       , adnl_(adnl)
@@ -76,11 +83,15 @@ class ValidatorGroup : public td::actor::Actor {
       , db_root_(std::move(db_root))
       , manager_(validator_manager)
       , init_(create_session)
-      , allow_unsafe_self_blocks_resync_(allow_unsafe_self_blocks_resync) {
+      , allow_unsafe_self_blocks_resync_(allow_unsafe_self_blocks_resync)
+      , mode_(mode) {
   }
 
  private:
   std::unique_ptr<validatorsession::ValidatorSession::Callback> make_validator_session_callback();
+  void send_collate_query(td::uint32 round_id, td::Timestamp timeout, td::Promise<BlockCandidate> promise,
+                          unsigned max_retries = 4);
+  void receive_collate_query_response(td::uint32 round_id, td::BufferSlice data, td::Promise<BlockCandidate> promise);
 
   struct PostponedAccept {
     RootHash root_hash;
@@ -101,22 +112,24 @@ class ValidatorGroup : public td::actor::Actor {
 
   std::vector<BlockIdExt> prev_block_ids_;
   BlockIdExt min_masterchain_block_id_;
-  UnixTime min_ts_;
 
   td::Ref<ValidatorSet> validator_set_;
+  block::CollatorConfig collator_config_;
   validatorsession::ValidatorSessionOptions config_;
 
   td::actor::ActorId<keyring::Keyring> keyring_;
   td::actor::ActorId<adnl::Adnl> adnl_;
-  td::actor::ActorId<rldp::Rldp> rldp_;
+  td::actor::ActorId<rldp2::Rldp> rldp_;
   td::actor::ActorId<overlay::Overlays> overlays_;
   std::string db_root_;
   td::actor::ActorId<ValidatorManager> manager_;
   td::actor::ActorOwn<validatorsession::ValidatorSession> session_;
+  adnl::AdnlNodeIdShort local_adnl_id_;
 
   bool init_ = false;
   bool started_ = false;
   bool allow_unsafe_self_blocks_resync_;
+  ValidatorManagerOptions::ValidatorMode mode_;
   td::uint32 last_known_round_id_ = 0;
 
   struct CachedCollatedBlock {
@@ -126,6 +139,18 @@ class ValidatorGroup : public td::actor::Actor {
   std::shared_ptr<CachedCollatedBlock> cached_collated_block_;
 
   void generated_block_candidate(std::shared_ptr<CachedCollatedBlock> cache, td::Result<BlockCandidate> R);
+
+  typedef std::tuple<td::Bits256, BlockIdExt, FileHash, FileHash> CacheKey;
+  std::map<CacheKey, UnixTime> approved_candidates_cache_;
+  td::uint32 approved_candidates_cache_round_ = 0;
+
+  void update_approve_cache(td::uint32 round_id, CacheKey key, UnixTime value);
+
+  static CacheKey block_to_cache_key(const BlockCandidate& block) {
+    return std::make_tuple(block.pubkey.as_bits256(), block.id, sha256_bits256(block.data), block.collated_file_hash);
+  }
+
+  void update_fast_cc_blocks(td::Ref<BlockData> new_block);
 };
 
 }  // namespace validator

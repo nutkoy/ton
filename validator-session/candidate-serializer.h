@@ -13,29 +13,20 @@
 
     You should have received a copy of the GNU Lesser General Public License
     along with TON Blockchain Library.  If not, see <http://www.gnu.org/licenses/>.
-
-    Copyright 2017-2020 Telegram Systems LLP
 */
 #pragma once
-#include "td/actor/actor.h"
+#include "ton/ton-types.h"
+#include "auto/tl/ton_api.h"
 
-#include "adnl/adnl-ext-client.h"
+namespace ton {
 
-namespace tonlib {
-class ExtClientLazy : public ton::adnl::AdnlExtClient {
- public:
-  class Callback {
-   public:
-    virtual ~Callback() {
-    }
-  };
+namespace validatorsession {
 
-  virtual void force_change_liteserver() = 0;
+td::Result<td::BufferSlice> serialize_candidate(const tl_object_ptr<ton_api::validatorSession_candidate> &block,
+                                                bool compression_enabled);
+td::Result<tl_object_ptr<ton_api::validatorSession_candidate>> deserialize_candidate(td::Slice data,
+                                                                                     int max_decompressed_data_size);
 
-  static td::actor::ActorOwn<ExtClientLazy> create(ton::adnl::AdnlNodeIdFull dst, td::IPAddress dst_addr,
-                                                   td::unique_ptr<Callback> callback);
-  static td::actor::ActorOwn<ExtClientLazy> create(
-      std::vector<std::pair<ton::adnl::AdnlNodeIdFull, td::IPAddress>> servers, td::unique_ptr<Callback> callback);
-};
+}  // namespace validatorsession
 
-}  // namespace tonlib
+}  // namespace ton

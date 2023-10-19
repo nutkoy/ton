@@ -170,6 +170,9 @@ class Overlays : public td::actor::Actor {
                                  td::Promise<td::Unit> promise) {
       promise.set_value(td::Unit());
     }
+    virtual void get_stats_extra(td::Promise<std::string> promise) {
+      promise.set_result("");
+    }
     virtual ~Callback() = default;
   };
 
@@ -180,11 +183,15 @@ class Overlays : public td::actor::Actor {
     return adnl::Adnl::get_mtu() - 36;
   }
   static constexpr td::uint32 max_fec_broadcast_size() {
-    return 16 << 20;
+    return 128 << 20;
   }
 
   static constexpr td::uint32 BroadcastFlagAnySender() {
     return 1;
+  }
+
+  static constexpr td::uint32 overlay_peer_ttl() {
+    return 600;
   }
 
   static td::actor::ActorOwn<Overlays> create(std::string db_root, td::actor::ActorId<keyring::Keyring> keyring,
@@ -237,6 +244,10 @@ class Overlays : public td::actor::Actor {
   virtual void get_overlay_random_peers(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay, td::uint32 max_peers,
                                         td::Promise<std::vector<adnl::AdnlNodeIdShort>> promise) = 0;
   virtual void get_stats(td::Promise<tl_object_ptr<ton_api::engine_validator_overlaysStats>> promise) = 0;
+
+  virtual void set_priority_broadcast_receivers(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay,
+                                                std::vector<adnl::AdnlNodeIdShort> nodes) = 0;
+  virtual void forget_peer(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay, adnl::AdnlNodeIdShort peer_id) = 0;
 };
 
 }  // namespace overlay

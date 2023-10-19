@@ -137,6 +137,7 @@ adnl.message.reinit date:int = adnl.Message;
 
 adnl.message.query query_id:int256 query:bytes = adnl.Message;
 adnl.message.answer query_id:int256 answer:bytes = adnl.Message;
+adnl.message.queryError query_id:int256 = adnl.Message;
 
 adnl.message.part hash:int256 total_size:int offset:int data:bytes = adnl.Message;
 
@@ -162,6 +163,7 @@ rldp.complete transfer_id:int256 part:int = rldp.MessagePart;
 rldp.message id:int256 data:bytes = rldp.Message;
 rldp.query query_id:int256 max_answer_size:long timeout:int data:bytes = rldp.Message;
 rldp.answer query_id:int256 data:bytes = rldp.Message;
+rldp.queryError query_id:int256 = rldp.Message;
 
 
 ---functions---
@@ -309,6 +311,7 @@ validatorSession.candidateId src:int256 root_hash:int256 file_hash:int256 collat
 
 validatorSession.blockUpdate ts:long actions:(vector validatorSession.round.Message) state:int = validatorSession.BlockUpdate;
 validatorSession.candidate src:int256 round:int root_hash:int256 data:bytes collated_data:bytes = validatorSession.Candidate;
+validatorSession.compressedCandidate flags:# src:int256 round:int root_hash:int256 decompressed_size:int data:bytes = validatorSession.Candidate;
 
 validatorSession.config catchain_idle_timeout:double catchain_max_deps:int round_candidates:int next_candidate_delay:double round_attempt_duration:int
         max_round_attempts:int max_block_size:int max_collated_data_size:int = validatorSession.Config;
@@ -365,6 +368,7 @@ tonNode.blockSignature who:int256 signature:bytes = tonNode.BlockSignature;
 tonNode.blockId workchain:int shard:long seqno:int = tonNode.BlockId;
 tonNode.blockIdExt workchain:int shard:long seqno:int root_hash:int256 file_hash:int256 = tonNode.BlockIdExt;
 tonNode.zeroStateIdExt workchain:int root_hash:int256 file_hash:int256 = tonNode.ZeroStateIdExt;
+tonNode.shardId workchain:int shard:long = tonNode.ShardId;
 
 tonNode.blockDescriptionEmpty = tonNode.BlockDescription;
 tonNode.blockDescription id:tonNode.blockIdExt = tonNode.BlockDescription;
@@ -405,11 +409,18 @@ tonNode.dataFull id:tonNode.blockIdExt proof:bytes block:bytes is_link:Bool = to
 tonNode.dataFullEmpty = tonNode.DataFull;
 
 tonNode.capabilities version:int capabilities:long = tonNode.Capabilities;
+tonNode.capabilitiesV2 version:int capabilities:long have_state:Bool = tonNode.Capabilities;
 
 tonNode.success = tonNode.Success;
 
 tonNode.archiveNotFound = tonNode.ArchiveInfo;
 tonNode.archiveInfo id:long = tonNode.ArchiveInfo;
+
+tonNode.importedMsgQueueLimits max_bytes:int max_msgs:int = ImportedMsgQueueLimits;
+tonNode.outMsgQueueProof queue_proofs:bytes block_state_proofs:bytes msg_counts:(vector int) = tonNode.OutMsgQueueProof;
+tonNode.outMsgQueueProofEmpty = tonNode.OutMsgQueueProof;
+
+tonNode.forgetPeer = tonNode.ForgetPeer;
 
 ---functions---
 
@@ -442,8 +453,11 @@ tonNode.downloadBlockProofLinks blocks:(vector tonNode.blockIdExt) = tonNode.Dat
 tonNode.downloadKeyBlockProofLinks blocks:(vector tonNode.blockIdExt) = tonNode.DataList;
 tonNode.getArchiveInfo masterchain_seqno:int = tonNode.ArchiveInfo;
 tonNode.getArchiveSlice archive_id:long offset:long max_size:int = tonNode.Data;
+tonNode.getOutMsgQueueProof dst_shard:tonNode.shardId blocks:(vector tonNode.blockIdExt)
+    limits:tonNode.importedMsgQueueLimits = tonNode.OutMsgQueueProof;
 
 tonNode.getCapabilities = tonNode.Capabilities;
+tonNode.getCapabilitiesV2 = tonNode.Capabilities;
 
 tonNode.slave.sendExtMessage message:tonNode.externalMessage = tonNode.Success;
 
@@ -506,6 +520,9 @@ db.state.shardClient block:tonNode.blockIdExt = db.state.ShardClient;
 db.state.asyncSerializer block:tonNode.blockIdExt last:tonNode.blockIdExt last_ts:int = db.state.AsyncSerializer;
 db.state.hardforks blocks:(vector tonNode.blockIdExt) = db.state.Hardforks;
 db.state.dbVersion version:int = db.state.DbVersion;
+db.state.persistentStateDescriptionShards shard_blocks:(vector tonNode.blockIdExt) = db.state.PersistentStateDescriptionShards;
+db.state.persistentStateDescriptionHeader masterchain_id:tonNode.blockIdExt start_time:int end_time:int = db.state.PersistentStateDescriptionHeader;
+db.state.persistentStateDescriptionsList list:(vector db.state.persistentStateDescriptionHeader) = db.state.PersistentStateDescriptionsList;
 
 db.state.key.destroyedSessions = db.state.Key;
 db.state.key.initBlockId = db.state.Key;
@@ -514,6 +531,8 @@ db.state.key.shardClient = db.state.Key;
 db.state.key.asyncSerializer = db.state.Key;
 db.state.key.hardforks = db.state.Key;
 db.state.key.dbVersion = db.state.Key;
+db.state.key.persistentStateDescriptionShards masterchain_seqno:int = db.state.Key;
+db.state.key.persistentStateDescriptionsList = db.state.Key;
 
 db.lt.el.key workchain:int shard:long idx:int = db.lt.Key;
 db.lt.desc.key workchain:int shard:long = db.lt.Key;
@@ -566,7 +585,8 @@ validator.config.global zero_state:tonNode.blockIdExt init_block:tonNode.blockId
 config.global adnl:adnl.config.global dht:dht.config.Global validator:validator.config.global = config.Global;
 
 liteserver.desc id:PublicKey ip:int port:int = liteserver.Desc;
-liteclient.config.global liteservers:(vector liteserver.desc) validator:validator.config.global = liteclient.config.Global;
+liteserver.descV2 id:PublicKey ip:int port:int shards:(vector tonNode.shardId) = liteserver.DescV2;
+liteclient.config.global liteservers:(vector liteserver.desc) liteservers_v2:(vector liteserver.descV2) validator:validator.config.global = liteclient.config.Global;
 
 engine.adnl id:int256 category:int = engine.Adnl;
 engine.addr ip:int port:int categories:(vector int) priority_categories:(vector int) = engine.Addr;
@@ -576,6 +596,7 @@ engine.dht id:int256 = engine.Dht;
 engine.validatorTempKey key:int256 expire_at:int = engine.ValidatorTempKey;
 engine.validatorAdnlAddress id:int256 expire_at:int = engine.ValidatorAdnlAddress;
 engine.validator id:int256 temp_keys:(vector engine.validatorTempKey) adnl_addrs:(vector engine.validatorAdnlAddress) election_date:int expire_at:int = engine.Validator;
+engine.collator adnl_id:int256 shard:tonNode.shardId = engine.Collator;
 engine.liteServer id:int256 port:int = engine.LiteServer;
 engine.controlProcess id:int256 permissions:int = engine.ControlProcess;
 engine.controlInterface id:int256 port:int allowed:(vector engine.controlProcess) = engine.ControlInterface; 
@@ -585,12 +606,15 @@ engine.dht.config dht:(vector engine.dht) gc:engine.gc = engine.dht.Config;
 engine.validator.fullNodeMaster port:int adnl:int256 = engine.validator.FullNodeMaster;
 engine.validator.fullNodeSlave ip:int port:int adnl:PublicKey = engine.validator.FullNodeSlave;
 engine.validator.fullNodeConfig ext_messages_broadcast_disabled:Bool = engine.validator.FullNodeConfig;
-engine.validator.config out_port:int addrs:(vector engine.Addr) adnl:(vector engine.adnl) 
+
+engine.validator.config out_port:int addrs:(vector engine.Addr) adnl:(vector engine.adnl)
         dht:(vector engine.dht)
-        validators:(vector engine.validator) fullnode:int256 fullnodeslaves:(vector engine.validator.fullNodeSlave)
+        validators:(vector engine.validator) collators:(vector engine.collator)
+        fullnode:int256 fullnodeslaves:(vector engine.validator.fullNodeSlave)
         fullnodemasters:(vector engine.validator.fullNodeMaster)
         fullnodeconfig:engine.validator.fullNodeConfig
         liteservers:(vector engine.liteServer) control:(vector engine.controlInterface)
+        shards_to_monitor:(vector tonNode.shardId)
         gc:engine.gc = engine.validator.Config;
 
 ---functions---
@@ -633,8 +657,13 @@ engine.validator.dhtServersStatus servers:(vector engine.validator.dhtServerStat
 
 engine.validator.overlayStatsNode adnl_id:int256 ip_addr:string bdcst_errors:int fec_bdcst_errors:int last_in_query:int last_out_query:int t_out_bytes:int t_in_bytes:int t_out_pckts:int t_in_pckts:int = engine.validator.OverlayStatsNode;
 
-engine.validator.overlayStats overlay_id:int256 overlay_id_full:PublicKey adnl_id:int256 scope:string nodes:(vector engine.validator.overlayStatsNode) stats:(vector engine.validator.oneStat) = engine.validator.OverlayStats;
+engine.validator.overlayStats overlay_id:int256 overlay_id_full:PublicKey adnl_id:int256 scope:string nodes:(vector engine.validator.overlayStatsNode) stats:(vector engine.validator.oneStat) extra:string = engine.validator.OverlayStats;
 engine.validator.overlaysStats overlays:(vector engine.validator.overlayStats) = engine.validator.OverlaysStats;
+
+engine.validator.shardOverlayStats.neighbour id:string proto_verison:int capabilities:long
+    roundtrip:double unreliability:double has_state:string = engine.validator.shardOverlayStats.Neighbour;
+engine.validator.shardOverlayStats shard:string mode:string
+    neighbours:(vector engine.validator.shardOverlayStats.neighbour) = engine.validator.ShardOverlayStats;
 
 engine.validator.onePerfTimerStat time:int min:double avg:double max:double = engine.validator.OnePerfTimerStat;
 engine.validator.perfTimerStatsByName name:string stats:(vector engine.validator.OnePerfTimerStat) = engine.validator.PerfTimerStatsByName;
@@ -642,6 +671,10 @@ engine.validator.perfTimerStats stats:(vector engine.validator.PerfTimerStatsByN
 
 engine.validator.shardOutQueueSize size:int = engine.validator.ShardOutQueueSize;
 
+engine.validator.validatorSessionInfo current_block:tonNode.blockId self:int256 current_round:int next_producers:(vector int256) = engine.validator.ValidatorSessionInfo;
+engine.validator.validatorSessionsInfo sessions:(vector engine.validator.validatorSessionInfo) = engine.validator.ValidatorSessionsInfo;
+
+engine.validator.requiredBlockCandidates block_ids:(vector tonNode.blockId) = engine.validator.RequiredBlockCandidates;
 
 ---functions---
 
@@ -695,6 +728,13 @@ engine.validator.importShardOverlayCertificate workchain:int shard:long signed_k
 engine.validator.getPerfTimerStats name:string = engine.validator.PerfTimerStats;
 engine.validator.getShardOutQueueSize flags:# block_id:tonNode.blockId dest_wc:flags.0?int dest_shard:flags.0?long = engine.validator.ShardOutQueueSize;
 engine.validator.setExtMessagesBroadcastDisabled disabled:Bool = engine.validator.Success;
+
+engine.validator.getValidatorSessionsInfo = engine.validator.ValidatorSessionsInfo;
+
+engine.validator.addCollator adnl_id:int256 shard:tonNode.shardId = engine.validator.Success;
+engine.validator.addShard shard:tonNode.shardId = engine.validator.Success;
+engine.validator.delCollator adnl_id:int256 shard:tonNode.shardId = engine.validator.Success;
+engine.validator.delShard shard:tonNode.shardId = engine.validator.Success;
 
 ---types---
 
@@ -750,7 +790,14 @@ validatorSession.stats id:tonNode.blockId timestamp:long self:int256 creator:int
     signatures:int signatures_weight:long approve_signatures:int approve_signatures_weight:long
     first_round:int rounds:(vector validatorSession.statsRound) = validatorSession.Stats;
 
+collatorNode.candidate source:PublicKey id:tonNode.blockIdExt data:bytes collated_data:bytes = collatorNode.Candidate;
+collatorNode.compressedCandidate flags:# source:PublicKey id:tonNode.blockIdExt decompressed_size:int data:bytes = collatorNode.Candidate;
+collatorNode.generateBlockSuccess candidate:collatorNode.Candidate = collatorNode.GenerateBlockResult;
+collatorNode.generateBlockError code:int message:string = collatorNode.GenerateBlockResult;
+
 ---functions---
+collatorNode.generateBlock workchain:int shard:long min_mc_id:tonNode.blockIdExt prev_blocks:(vector tonNode.blockIdExt)
+    creator:int256 = collatorNode.GenerateBlockResult;
 
 ---types---
 
@@ -887,3 +934,6 @@ storage.daemon.withdraw contract:string = storage.daemon.Success;
 storage.daemon.sendCoins address:string amount:string message:string = storage.daemon.Success;
 storage.daemon.closeStorageContract address:string = storage.daemon.Success;
 storage.daemon.removeStorageProvider = storage.daemon.Success;
+
+---types---
+proxyLiteserver.config port:int id:PublicKey = proxyLiteserver.Config;

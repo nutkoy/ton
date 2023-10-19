@@ -30,7 +30,6 @@
 #include "td/utils/Status.h"
 #include "td/utils/overloaded.h"
 
-#include "keys/encryptor.h"
 #include "td/utils/port/Poll.h"
 #include <vector>
 
@@ -265,12 +264,16 @@ void OverlayManager::get_overlay_random_peers(adnl::AdnlNodeIdShort local_id, Ov
                                               td::uint32 max_peers,
                                               td::Promise<std::vector<adnl::AdnlNodeIdShort>> promise) {
   auto it = overlays_.find(local_id);
-  if (it != overlays_.end()) {
-    auto it2 = it->second.find(overlay_id);
-    if (it2 != it->second.end()) {
-      td::actor::send_closure(it2->second, &Overlay::get_overlay_random_peers, max_peers, std::move(promise));
-    }
+  if (it == overlays_.end()) {
+    promise.set_error(td::Status::Error(PSTRING() << "no such local id " << local_id));
+    return;
   }
+  auto it2 = it->second.find(overlay_id);
+  if (it2 == it->second.end()) {
+    promise.set_error(td::Status::Error(PSTRING() << "no such overlay " << overlay_id));
+    return;
+  }
+  td::actor::send_closure(it2->second, &Overlay::get_overlay_random_peers, max_peers, std::move(promise));
 }
 
 td::actor::ActorOwn<Overlays> Overlays::create(std::string db_root, td::actor::ActorId<keyring::Keyring> keyring,
@@ -345,6 +348,32 @@ void OverlayManager::get_stats(td::Promise<tl_object_ptr<ton_api::engine_validat
   }
 
   td::actor::send_closure(act, &Cb::decr_pending);
+}
+
+void OverlayManager::set_priority_broadcast_receivers(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay,
+                                                      std::vector<adnl::AdnlNodeIdShort> nodes) {
+  auto it = overlays_.find(local_id);
+  if (it == overlays_.end()) {
+    return;
+  }
+  auto it2 = it->second.find(overlay);
+  if (it2 == it->second.end()) {
+    return;
+  }
+  td::actor::send_closure(it2->second, &Overlay::set_priority_broadcast_receivers, std::move(nodes));
+}
+
+void OverlayManager::forget_peer(adnl::AdnlNodeIdShort local_id, OverlayIdShort overlay,
+                                 adnl::AdnlNodeIdShort peer_id) {
+  auto it = overlays_.find(local_id);
+  if (it == overlays_.end()) {
+    return;
+  }
+  auto it2 = it->second.find(overlay);
+  if (it2 == it->second.end()) {
+    return;
+  }
+  td::actor::send_closure(it2->second, &Overlay::forget_peer, peer_id);
 }
 
 Certificate::Certificate(PublicKey issued_by, td::int32 expire_at, td::uint32 max_size, td::uint32 flags,

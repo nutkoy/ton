@@ -1144,3 +1144,116 @@ class SetExtMessagesBroadcastDisabledQuery : public Query {
  private:
   bool value;
 };
+
+class GetValidatorSessionsInfoQuery : public Query {
+ public:
+  GetValidatorSessionsInfoQuery(td::actor::ActorId<ValidatorEngineConsole> console, Tokenizer tokenizer)
+      : Query(console, std::move(tokenizer)) {
+  }
+  td::Status run() override;
+  td::Status send() override;
+  td::Status receive(td::BufferSlice data) override;
+  static std::string get_name() {
+    return "getvalidatorsessions";
+  }
+  static std::string get_help() {
+    return "getvalidatorsessions\tprint info about validator session";
+  }
+  std::string name() const override {
+    return get_name();
+  }
+};
+
+class AddCollatorQuery : public Query {
+ public:
+  AddCollatorQuery(td::actor::ActorId<ValidatorEngineConsole> console, Tokenizer tokenizer)
+      : Query(console, std::move(tokenizer)) {
+  }
+  td::Status run() override;
+  td::Status send() override;
+  td::Status receive(td::BufferSlice data) override;
+  static std::string get_name() {
+    return "addcollator";
+  }
+  static std::string get_help() {
+    return "addcollator <adnl_id> <workchain> <shard>\tadd collator with given adnl_id and shard";
+  }
+  std::string name() const override {
+    return get_name();
+  }
+
+ private:
+  ton::PublicKeyHash adnl_id_;
+  td::int32 wc_;
+  td::int64 shard_;
+};
+
+class AddShardQuery : public Query {
+ public:
+  AddShardQuery(td::actor::ActorId<ValidatorEngineConsole> console, Tokenizer tokenizer)
+      : Query(console, std::move(tokenizer)) {
+  }
+  td::Status run() override;
+  td::Status send() override;
+  td::Status receive(td::BufferSlice data) override;
+  static std::string get_name() {
+    return "addshard";
+  }
+  static std::string get_help() {
+    return "addshard <workchain> <shard>\tstart monitoring shard";
+  }
+  std::string name() const override {
+    return get_name();
+  }
+
+ private:
+  td::int32 wc_;
+  td::int64 shard_;
+};
+
+class DelCollatorQuery : public Query {
+ public:
+  DelCollatorQuery(td::actor::ActorId<ValidatorEngineConsole> console, Tokenizer tokenizer)
+      : Query(console, std::move(tokenizer)) {
+  }
+  td::Status run() override;
+  td::Status send() override;
+  td::Status receive(td::BufferSlice data) override;
+  static std::string get_name() {
+    return "delcollator";
+  }
+  static std::string get_help() {
+    return "delcollator <adnl_id> <workchain> <shard>\tremove collator with given adnl_id and shard";
+  }
+  std::string name() const override {
+    return get_name();
+  }
+
+ private:
+  ton::PublicKeyHash adnl_id_;
+  td::int32 wc_;
+  td::int64 shard_;
+};
+
+class DelShardQuery : public Query {
+ public:
+  DelShardQuery(td::actor::ActorId<ValidatorEngineConsole> console, Tokenizer tokenizer)
+      : Query(console, std::move(tokenizer)) {
+  }
+  td::Status run() override;
+  td::Status send() override;
+  td::Status receive(td::BufferSlice data) override;
+  static std::string get_name() {
+    return "delshard";
+  }
+  static std::string get_help() {
+    return "delshard <workchain> <shard>\tstop monitoring shard";
+  }
+  std::string name() const override {
+    return get_name();
+  }
+
+ private:
+  td::int32 wc_;
+  td::int64 shard_;
+};

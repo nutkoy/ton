@@ -18,7 +18,6 @@
 */
 #include "state-serializer.hpp"
 #include "td/utils/Random.h"
-#include "adnl/utils.hpp"
 #include "ton/ton-io.hpp"
 #include "common/delay.h"
 
@@ -131,6 +130,21 @@ void AsyncStateSerializer::next_iteration() {
   CHECK(masterchain_handle_->id() == last_block_id_);
   if (attempt_ < max_attempt() && last_key_block_id_.id.seqno < last_block_id_.id.seqno &&
       need_serialize(masterchain_handle_)) {
+    if (!stored_persistent_state_description_) {
+      LOG(INFO) << "storing persistent state description for " << masterchain_handle_->id().id;
+      running_ = true;
+      auto P = td::PromiseCreator::lambda([SelfId = actor_id(this)](td::Result<td::Ref<ShardState>> R) {
+        if (R.is_error()) {
+          td::actor::send_closure(SelfId, &AsyncStateSerializer::fail_handler,
+                                  R.move_as_error_prefix("failed to get masterchain state: "));
+        } else {
+          td::actor::send_closure(SelfId, &AsyncStateSerializer::store_persistent_state_description,
+                                  td::Ref<MasterchainState>(R.move_as_ok()));
+        }
+      });
+      td::actor::send_closure(manager_, &ValidatorManager::get_shard_state_from_db, masterchain_handle_, std::move(P));
+      return;
+    }
     if (!have_masterchain_state_) {
       LOG(INFO) << "started serializing persistent state for " << masterchain_handle_->id().id;
       // block next attempts immediately, but send actual request later
@@ -141,16 +155,12 @@ void AsyncStateSerializer::next_iteration() {
       return;
     }
     while (next_idx_ < shards_.size()) {
-      if (!need_monitor(shards_[next_idx_].shard_full())) {
-        next_idx_++;
-      } else {
-          // block next attempts immediately, but send actual request later
-          running_ = true;
-          delay_action(
-            [SelfId = actor_id(this), shard = shards_[next_idx_]]() { td::actor::send_closure(SelfId, &AsyncStateSerializer::request_shard_state, shard); },
-            td::Timestamp::in(td::Random::fast(0, 1800)));
-        return;
-      }
+        // block next attempts immediately, but send actual request later
+        running_ = true;
+        delay_action(
+          [SelfId = actor_id(this), shard = shards_[next_idx_]]() { td::actor::send_closure(SelfId, &AsyncStateSerializer::request_shard_state, shard); },
+          td::Timestamp::in(td::Random::fast(0, 1800)));
+      return;
     }
     LOG(INFO) << "finished serializing persistent state for " << masterchain_handle_->id().id;
     last_key_block_ts_ = masterchain_handle_->unix_time();
@@ -170,6 +180,7 @@ void AsyncStateSerializer::next_iteration() {
   if (masterchain_handle_->inited_next_left()) {
     last_block_id_ = masterchain_handle_->one_next(true);
     have_masterchain_state_ = false;
+    stored_persistent_state_description_ = false;
     masterchain_handle_ = nullptr;
     saved_to_db_ = false;
     shards_.clear();
@@ -182,6 +193,24 @@ void AsyncStateSerializer::got_top_masterchain_handle(BlockIdExt block_id) {
   if (masterchain_handle_ && masterchain_handle_->id().id.seqno < block_id.id.seqno) {
     CHECK(masterchain_handle_->inited_next_left());
   }
+}
+
+void AsyncStateSerializer::store_persistent_state_description(td::Ref<MasterchainState> state) {
+  stored_persistent_state_description_ = true;
+  attempt_ = 0;
+  running_ = false;
+
+  PersistentStateDescription desc;
+  desc.masterchain_id = state->get_block_id();
+  desc.start_time = state->get_unix_time();
+  desc.end_time = ValidatorManager::persistent_state_ttl(desc.start_time);
+  for (const auto &v : state->get_shards()) {
+    desc.shard_blocks.push_back(v->top_block_id());
+  }
+  td::actor::send_closure(manager_, &ValidatorManager::add_persistent_state_description,
+                          td::Ref<PersistentStateDescription>(true, std::move(desc)));
+
+  next_iteration();
 }
 
 void AsyncStateSerializer::got_masterchain_handle(BlockHandle handle) {
@@ -200,8 +229,10 @@ void AsyncStateSerializer::got_masterchain_state(td::Ref<MasterchainState> state
   CHECK(shards_.size() == 0);
 
   auto vec = state->get_shards();
-  for (auto& v : vec) {
-    shards_.push_back(v->top_block_id());
+  for (auto &v : vec) {
+    if (opts_->need_monitor(v->shard(), state)) {
+      shards_.push_back(v->top_block_id());
+    }
   }
 
   auto write_data = [hash = state->root_cell()->get_hash(), cell_db_reader](td::FileFd& fd) {
@@ -277,10 +308,6 @@ void AsyncStateSerializer::fail_handler_cont() {
 void AsyncStateSerializer::success_handler() {
   running_ = false;
   next_iteration();
-}
-
-bool AsyncStateSerializer::need_monitor(ShardIdFull shard) {
-  return opts_->need_monitor(shard);
 }
 
 bool AsyncStateSerializer::need_serialize(BlockHandle handle) {

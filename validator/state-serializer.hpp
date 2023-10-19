@@ -43,6 +43,7 @@ class AsyncStateSerializer : public td::actor::Actor {
   td::uint32 next_idx_ = 0;
 
   BlockHandle masterchain_handle_;
+  bool stored_persistent_state_description_ = false;
   bool have_masterchain_state_ = false;
 
   std::vector<BlockIdExt> shards_;
@@ -58,7 +59,6 @@ class AsyncStateSerializer : public td::actor::Actor {
   }
 
   bool need_serialize(BlockHandle handle);
-  bool need_monitor(ShardIdFull shard);
 
   void alarm() override;
   void start_up() override;
@@ -70,6 +70,7 @@ class AsyncStateSerializer : public td::actor::Actor {
 
   void next_iteration();
   void got_top_masterchain_handle(BlockIdExt block_id);
+  void store_persistent_state_description(td::Ref<MasterchainState> state);
   void got_masterchain_handle(BlockHandle handle_);
   void got_masterchain_state(td::Ref<MasterchainState> state, std::shared_ptr<vm::CellDbReader> cell_db_reader);
   void stored_masterchain_state();
@@ -89,6 +90,10 @@ class AsyncStateSerializer : public td::actor::Actor {
   void fail_handler(td::Status reason);
   void fail_handler_cont();
   void success_handler();
+
+  void update_options(td::Ref<ValidatorManagerOptions> opts) {
+    opts_ = std::move(opts);
+  }
 };
 
 }  // namespace validator

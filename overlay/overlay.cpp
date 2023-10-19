@@ -18,6 +18,7 @@
 */
 #include "auto/tl/ton_api.h"
 #include "td/utils/Random.h"
+#include "common/delay.h"
 
 #include "adnl/utils.hpp"
 #include "dht/dht.h"
@@ -131,11 +132,6 @@ void OverlayImpl::process_query(adnl::AdnlNodeIdShort src, ton_api::overlay_getB
   VLOG(OVERLAY_WARNING) << this << ": DROPPING getBroadcastList query";
   promise.set_error(td::Status::Error(ErrorCode::protoviolation, "dropping get broadcast list query"));
 }
-
-/*void OverlayImpl::process_query(adnl::AdnlNodeIdShort src, adnl::AdnlQueryId query_id, ton_api::overlay_customQuery &query) {
-  callback_->receive_query(src, query_id, id_, std::move(query.data_));
-}
-*/
 
 void OverlayImpl::receive_query(adnl::AdnlNodeIdShort src, td::BufferSlice data, td::Promise<td::BufferSlice> promise) {
   if (!public_) {
@@ -405,21 +401,50 @@ void OverlayImpl::bcast_gc() {
   CHECK(delivered_broadcasts_.size() == bcast_lru_.size());
 }
 
-void OverlayImpl::send_message_to_neighbours(td::BufferSlice data) {
-  for (auto &n : neighbours_) {
-    td::actor::send_closure(manager_, &OverlayManager::send_message, n, local_id_, overlay_id_, data.clone());
+void OverlayImpl::wait_neighbours_not_empty(td::Promise<td::Unit> promise, int max_retries) {
+  if (!neighbours_.empty()) {
+    promise.set_result(td::Unit());
+  } else if (max_retries > 0) {
+    delay_action(
+        [SelfId = actor_id(this), promise = std::move(promise), max_retries]() mutable {
+          td::actor::send_closure(SelfId, &OverlayImpl::wait_neighbours_not_empty, std::move(promise), max_retries - 1);
+        },
+        td::Timestamp::in(0.5));
+  } else {
+    promise.set_error(td::Status::Error(ErrorCode::timeout));
   }
+}
+
+void OverlayImpl::send_message_to_neighbours(td::BufferSlice data) {
+  wait_neighbours_not_empty([this, data = std::move(data)](td::Result<td::Unit> R) {
+    if (R.is_error()) {
+      return;
+    }
+    for (auto &n : neighbours_) {
+      td::actor::send_closure(manager_, &OverlayManager::send_message, n, local_id_, overlay_id_, data.clone());
+    }
+  });
 }
 
 void OverlayImpl::send_broadcast(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data) {
-  auto S = BroadcastSimple::create_new(actor_id(this), keyring_, send_as, std::move(data), flags);
-  if (S.is_error()) {
-    LOG(WARNING) << "failed to send broadcast: " << S;
-  }
+  wait_neighbours_not_empty([this, send_as, flags, data = std::move(data)](td::Result<td::Unit> R) mutable {
+    if (R.is_error()) {
+      return;
+    }
+    auto S = BroadcastSimple::create_new(actor_id(this), keyring_, send_as, std::move(data), flags);
+    if (S.is_error()) {
+      LOG(WARNING) << "failed to send broadcast: " << S;
+    }
+  });
 }
 
 void OverlayImpl::send_broadcast_fec(PublicKeyHash send_as, td::uint32 flags, td::BufferSlice data) {
-  OverlayOutboundFecBroadcast::create(std::move(data), flags, actor_id(this), send_as);
+  wait_neighbours_not_empty([this, send_as, flags, data = std::move(data)](td::Result<td::Unit> R) mutable {
+    if (R.is_error()) {
+      return;
+    }
+    OverlayOutboundFecBroadcast::create(std::move(data), flags, actor_id(this), send_as);
+  });
 }
 
 void OverlayImpl::print(td::StringBuilder &sb) {
@@ -640,7 +665,12 @@ void OverlayImpl::get_stats(td::Promise<tl_object_ptr<ton_api::engine_validator_
   res->stats_.push_back(
       create_tl_object<ton_api::engine_validator_oneStat>("neighbours_cnt", PSTRING() << neighbours_.size()));
 
-  promise.set_value(std::move(res));
+  callback_->get_stats_extra([promise = std::move(promise), res = std::move(res)](td::Result<std::string> R) mutable {
+    if (R.is_ok()) {
+      res->extra_ = R.move_as_ok();
+    }
+    promise.set_value(std::move(res));
+  });
 }
 
 }  // namespace overlay

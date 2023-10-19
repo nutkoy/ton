@@ -28,9 +28,10 @@
 #include "td/utils/Container.h"
 #include "td/utils/Random.h"
 
-#include "ExtClientLazy.h"
+#include "lite-client/ext-client.h"
 #include "TonlibError.h"
 #include "utils.h"
+#include "lite-client/QueryTraits.h"
 
 namespace tonlib {
 class LastBlock;
@@ -38,7 +39,7 @@ class LastConfig;
 struct LastBlockState;
 struct LastConfigState;
 struct ExtClientRef {
-  td::actor::ActorId<ExtClientLazy> adnl_ext_client_;
+  td::actor::ActorId<liteclient::ExtClient> adnl_ext_client_;
   td::actor::ActorId<LastBlock> last_block_actor_;
   td::actor::ActorId<LastConfig> last_config_actor_;
 };
@@ -64,6 +65,7 @@ class ExtClient {
 
   template <class QueryT>
   void send_query(QueryT query, td::Promise<typename QueryT::ReturnType> promise, td::int32 seq_no = -1) {
+    ton::ShardIdFull shard = liteclient::QueryTraits<QueryT>::get_shard(query);
     auto raw_query = ton::serialize_tl_object(&query, true);
     td::uint32 tag = td::Random::fast_uint32();
     VLOG(lite_server) << "send query to liteserver: " << tag << " " << to_string(query);
@@ -77,7 +79,7 @@ class ExtClient {
         ton::serialize_tl_object(ton::create_tl_object<ton::lite_api::liteServer_query>(std::move(raw_query)), true);
 
     send_raw_query(
-        std::move(liteserver_query), [promise = std::move(promise), tag](td::Result<td::BufferSlice> R) mutable {
+        std::move(liteserver_query), shard, [promise = std::move(promise), tag](td::Result<td::BufferSlice> R) mutable {
           auto res = [&]() -> td::Result<typename QueryT::ReturnType> {
             TRY_RESULT_PREFIX(data, std::move(R), TonlibError::LiteServerNetwork());
             auto r_error = ton::fetch_tl_object<ton::lite_api::liteServer_error>(data.clone(), true);
@@ -97,7 +99,7 @@ class ExtClient {
 
   void force_change_liteserver() {
     if (!client_.adnl_ext_client_.empty()) {
-      td::actor::send_closure(client_.adnl_ext_client_, &ExtClientLazy::force_change_liteserver);
+      td::actor::send_closure(client_.adnl_ext_client_, &liteclient::ExtClient::force_change_liteserver);
     }
   }
 
@@ -107,6 +109,6 @@ class ExtClient {
   td::Container<td::Promise<LastBlockState>> last_block_queries_;
   td::Container<td::Promise<LastConfigState>> last_config_queries_;
 
-  void send_raw_query(td::BufferSlice query, td::Promise<td::BufferSlice> promise);
+  void send_raw_query(td::BufferSlice query, ton::ShardIdFull shard, td::Promise<td::BufferSlice> promise);
 };
 }  // namespace tonlib

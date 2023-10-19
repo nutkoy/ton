@@ -31,6 +31,7 @@
 #include "vm/cells/MerkleProof.h"
 #include "vm/cells/MerkleUpdate.h"
 #include "common/errorlog.h"
+#include "fabric.h"
 #include <ctime>
 
 namespace ton {
@@ -48,13 +49,12 @@ std::string ErrorCtx::as_string() const {
   return a;
 }
 
-ValidateQuery::ValidateQuery(ShardIdFull shard, UnixTime min_ts, BlockIdExt min_masterchain_block_id,
+ValidateQuery::ValidateQuery(ShardIdFull shard, BlockIdExt min_masterchain_block_id,
                              std::vector<BlockIdExt> prev, BlockCandidate candidate, Ref<ValidatorSet> validator_set,
                              td::actor::ActorId<ValidatorManager> manager, td::Timestamp timeout,
-                             td::Promise<ValidateCandidateResult> promise, bool is_fake)
+                             td::Promise<ValidateCandidateResult> promise, unsigned mode)
     : shard_(shard)
     , id_(candidate.id)
-    , min_ts(min_ts)
     , min_mc_block_id(min_masterchain_block_id)
     , prev_blocks(std::move(prev))
     , block_candidate(std::move(candidate))
@@ -62,13 +62,13 @@ ValidateQuery::ValidateQuery(ShardIdFull shard, UnixTime min_ts, BlockIdExt min_
     , manager(manager)
     , timeout(timeout)
     , main_promise(std::move(promise))
-    , is_fake_(is_fake)
+    , is_fake_(mode & ValidateMode::fake)
+    , full_collated_data_(mode & ValidateMode::full_collated_data)
     , shard_pfx_(shard_.shard)
     , shard_pfx_len_(ton::shard_prefix_length(shard_))
     , perf_timer_("validateblock", 0.1, [manager](double duration) {
       send_closure(manager, &ValidatorManager::add_perf_timer_stat, "validateblock", duration);
     }) {
-  proc_hash_.zero();
 }
 
 void ValidateQuery::alarm() {
@@ -88,6 +88,7 @@ bool ValidateQuery::reject_query(std::string error, td::BufferSlice reason) {
                                       << " collated_data=" << block_candidate.collated_file_hash.to_hex());
     errorlog::ErrorLog::log_file(block_candidate.data.clone());
     errorlog::ErrorLog::log_file(block_candidate.collated_data.clone());
+    LOG(INFO) << "validation took " << perf_timer_.elapsed() << " s";
     main_promise.set_result(CandidateReject{std::move(error), std::move(reason)});
   }
   stop();
@@ -108,6 +109,7 @@ bool ValidateQuery::soft_reject_query(std::string error, td::BufferSlice reason)
                                       << " collated_data=" << block_candidate.collated_file_hash.to_hex());
     errorlog::ErrorLog::log_file(block_candidate.data.clone());
     errorlog::ErrorLog::log_file(block_candidate.collated_data.clone());
+    LOG(INFO) << "validation took " << perf_timer_.elapsed() << " s";
     main_promise.set_result(CandidateReject{std::move(error), std::move(reason)});
   }
   stop();
@@ -126,6 +128,7 @@ bool ValidateQuery::fatal_error(td::Status error) {
       errorlog::ErrorLog::log_file(block_candidate.data.clone());
       errorlog::ErrorLog::log_file(block_candidate.collated_data.clone());
     }
+    LOG(INFO) << "validation took " << perf_timer_.elapsed() << " s";
     main_promise(std::move(error));
   }
   stop();
@@ -147,6 +150,7 @@ bool ValidateQuery::fatal_error(std::string err_msg, int err_code) {
 
 void ValidateQuery::finish_query() {
   if (main_promise) {
+    LOG(INFO) << "validation took " << perf_timer_.elapsed() << " s";
     main_promise.set_result(now_);
   }
   stop();
@@ -160,6 +164,7 @@ void ValidateQuery::finish_query() {
 
 void ValidateQuery::start_up() {
   LOG(INFO) << "validate query for " << block_candidate.id.to_str() << " started";
+  LOG(DEBUG) << "full_collated_data is " << full_collated_data_;
   alarm_timestamp() = timeout;
   rand_seed_.set_zero();
   created_by_ = block_candidate.pubkey;
@@ -260,18 +265,20 @@ void ValidateQuery::start_up() {
                                   td::actor::send_closure_later(
                                       std::move(self), &ValidateQuery::after_get_latest_mc_state, std::move(res));
                                 });
-  // 3. load state(s) corresponding to previous block(s)
+  // 3. load state(s) corresponding to previous block(s) (not full-collaoted-data or masterchain)
   prev_states.resize(prev_blocks.size());
-  for (int i = 0; (unsigned)i < prev_blocks.size(); i++) {
-    // 3.1. load state
-    LOG(DEBUG) << "sending wait_block_state() query #" << i << " for " << prev_blocks[i].to_str() << " to Manager";
-    ++pending;
-    td::actor::send_closure_later(manager, &ValidatorManager::wait_block_state_short, prev_blocks[i], priority(),
-                                  timeout, [self = get_self(), i](td::Result<Ref<ShardState>> res) -> void {
-                                    LOG(DEBUG) << "got answer to wait_block_state_short query #" << i;
-                                    td::actor::send_closure_later(
-                                        std::move(self), &ValidateQuery::after_get_shard_state, i, std::move(res));
-                                  });
+  if  (is_masterchain() || !full_collated_data_) {
+    for (int i = 0; (unsigned)i < prev_blocks.size(); i++) {
+      // 3.1. load state
+      LOG(DEBUG) << "sending wait_block_state() query #" << i << " for " << prev_blocks[i].to_str() << " to Manager";
+      ++pending;
+      td::actor::send_closure_later(manager, &ValidatorManager::wait_block_state_short, prev_blocks[i], priority(),
+                                    timeout, [self = get_self(), i](td::Result<Ref<ShardState>> res) -> void {
+                                      LOG(DEBUG) << "got answer to wait_block_state_short query #" << i;
+                                      td::actor::send_closure_later(
+                                          std::move(self), &ValidateQuery::after_get_shard_state, i, std::move(res));
+                                    });
+    }
   }
   // 4. unpack block candidate (while necessary data is being loaded)
   if (!unpack_block_candidate()) {
@@ -510,7 +517,7 @@ bool ValidateQuery::extract_collated_data_from(Ref<vm::Cell> croot, int idx) {
   }
   if (block::gen::t_TopBlockDescrSet.has_valid_tag(cs)) {
     LOG(DEBUG) << "collated datum # " << idx << " is a TopBlockDescrSet";
-    if (!block::gen::t_TopBlockDescrSet.validate_upto(10000, cs)) {
+    if (!block::gen::t_TopBlockDescrSet.validate_upto(10000000, cs)) {
       return reject_query("invalid TopBlockDescrSet");
     }
     if (top_shard_descr_dict_) {
@@ -1017,6 +1024,9 @@ bool ValidateQuery::check_this_shard_mc_info() {
  */
 
 bool ValidateQuery::compute_prev_state() {
+  if (!is_masterchain() && full_collated_data_) {
+    return compute_prev_state_from_collated_data();
+  }
   CHECK(prev_states.size() == 1u + after_merge_);
   // Extend validator timeout if previous block is too old
   UnixTime prev_ts = prev_states[0]->get_unix_time();
@@ -1042,6 +1052,46 @@ bool ValidateQuery::compute_prev_state() {
     return reject_query("previous state hash mismatch for block "s + id_.to_str() + " : block header declares " +
                         prev_state_hash_.to_hex() + " , actual " + state_hash.to_hex());
   }
+  return true;
+}
+
+bool ValidateQuery::compute_prev_state_from_collated_data() {
+  td::Bits256 state_hash;
+  if (id_.seqno() == 1) {
+    if (prev_blocks.size() != 1) {
+      return reject_query("seqno is 1, but number of previous blocks is not 1");
+    }
+    state_hash = prev_blocks[0].root_hash;
+  } else {
+    std::vector<Ref<vm::Cell>> prev_state_roots(prev_blocks.size());
+    for (size_t i = 0; i < prev_blocks.size(); ++i) {
+      prev_state_roots[i] = get_virt_state_root(prev_blocks[i].root_hash);
+      if (prev_state_roots[i].is_null()) {
+        return reject_query(PSTRING() << "cannot get hash of previous state root: " << prev_blocks[i]);
+      }
+    }
+
+    if (prev_state_roots.size() == 1) {
+      state_hash = prev_state_roots[0]->get_hash().bits();
+    } else {
+      CHECK(prev_state_roots.size() == 2);
+      Ref<vm::Cell> merged;
+      if (!block::gen::t_ShardState.cell_pack_split_state(merged, prev_state_roots[0], prev_state_roots[1])) {
+        return fatal_error(-667, "cannot construct mechanically merged previously state");
+      }
+      state_hash = merged->get_hash().bits();
+    }
+  }
+  if (state_hash != prev_state_hash_) {
+    return reject_query("previous state hash mismatch for block "s + id_.to_str() + " : block header declares " +
+                        prev_state_hash_.to_hex() + " , actual " + state_hash.to_hex());
+  }
+  auto it = virt_roots_.find(state_hash);
+  if (it == virt_roots_.end()) {
+    return reject_query(PSTRING() << "no state root for previous block in collated data (hash = "
+                                  << state_hash.to_hex() << ")");
+  }
+  prev_state_root_ = it->second;
   return true;
 }
 
@@ -1248,15 +1298,51 @@ bool ValidateQuery::request_neighbor_queues() {
     neighbors_.emplace_back(*shard_ptr);
   }
   int i = 0;
-  for (block::McShardDescr& descr : neighbors_) {
-    LOG(DEBUG) << "requesting outbound queue of neighbor #" << i << " : " << descr.blk_.to_str();
-    ++pending;
-    send_closure_later(manager, &ValidatorManager::wait_block_message_queue_short, descr.blk_, priority(), timeout,
-                       [self = get_self(), i](td::Result<Ref<MessageQueue>> res) {
-                         td::actor::send_closure(std::move(self), &ValidateQuery::got_neighbor_out_queue, i,
-                                                 std::move(res));
-                       });
-    ++i;
+  if (full_collated_data_) {
+    for (block::McShardDescr& descr : neighbors_) {
+      LOG(DEBUG) << "getting outbound queue of neighbor #" << i << " from collated data : " << descr.blk_.to_str();
+      if (descr.blk_.is_masterchain()) {
+        if (descr.blk_ != mc_state_->get_block_id()) {
+          return fatal_error("neighbor from masterchain is not the last mc block");
+        }
+        ++pending;
+        send_closure_later(get_self(), &ValidateQuery::got_neighbor_out_queue, i, mc_state_->message_queue());
+        ++i;
+        continue;
+      }
+      td::Bits256 state_root_hash;
+      if (descr.blk_.seqno() == 0) {
+        state_root_hash = descr.blk_.root_hash;
+      } else {
+        Ref<vm::Cell> state_root = get_virt_state_root(descr.blk_.root_hash);
+        if (state_root.is_null()) {
+          return reject_query(PSTRING() << "cannot get hash of state root: " << descr.blk_);
+        }
+        state_root_hash = state_root->get_hash().bits();
+      }
+      auto it = virt_roots_.find(state_root_hash);
+      if (it == virt_roots_.end()) {
+        return reject_query(PSTRING() << "cannot get state root form collated data: " << descr.blk_);
+      }
+      auto state = ShardStateQ::fetch(descr.blk_, {}, it->second);
+      if (state.is_error()) {
+        return reject_query("cannot fetch shard state from collated data", state.move_as_error());
+      }
+      ++pending;
+      send_closure_later(get_self(), &ValidateQuery::got_neighbor_out_queue, i, state.move_as_ok()->message_queue());
+      ++i;
+    }
+  } else {
+    for (block::McShardDescr& descr : neighbors_) {
+      LOG(DEBUG) << "requesting outbound queue of neighbor #" << i << " : " << descr.blk_.to_str();
+      ++pending;
+      send_closure_later(manager, &ValidatorManager::wait_block_message_queue_short, descr.blk_, priority(), timeout,
+                         [self = get_self(), i](td::Result<Ref<MessageQueue>> res) {
+                           td::actor::send_closure(std::move(self), &ValidateQuery::got_neighbor_out_queue, i,
+                                                   std::move(res));
+                         });
+      ++i;
+    }
   }
   return true;
 }
@@ -1290,8 +1376,8 @@ void ValidateQuery::got_neighbor_out_queue(int i, td::Result<Ref<MessageQueue>> 
   // TODO: comment the next two lines in the future when the output queues become huge
   // (do this carefully)
   if (debug_checks_) {
-    CHECK(block::gen::t_OutMsgQueueInfo.validate_ref(1000000, outq_descr->root_cell()));
-    CHECK(block::tlb::t_OutMsgQueueInfo.validate_ref(1000000, outq_descr->root_cell()));
+    CHECK(block::gen::t_OutMsgQueueInfo.validate_ref(1000000000, outq_descr->root_cell()));
+    CHECK(block::tlb::t_OutMsgQueueInfo.validate_ref(1000000000, outq_descr->root_cell()));
   }
   // unpack ProcessedUpto
   LOG(DEBUG) << "unpacking ProcessedUpto of neighbor " << descr.blk_.to_str();
@@ -2124,13 +2210,13 @@ bool ValidateQuery::unpack_block_data() {
   auto outmsg_cs = vm::load_cell_slice_ref(std::move(extra.out_msg_descr));
   // run some hand-written checks from block::tlb::
   // (automatic tests from block::gen:: have been already run for the entire block)
-  if (!block::tlb::t_InMsgDescr.validate_upto(10000000, *inmsg_cs)) {
+  if (!block::tlb::t_InMsgDescr.validate_upto(1000000000, *inmsg_cs)) {
     return reject_query("InMsgDescr of the new block failed to pass handwritten validity tests");
   }
-  if (!block::tlb::t_OutMsgDescr.validate_upto(10000000, *outmsg_cs)) {
+  if (!block::tlb::t_OutMsgDescr.validate_upto(1000000000, *outmsg_cs)) {
     return reject_query("OutMsgDescr of the new block failed to pass handwritten validity tests");
   }
-  if (!block::tlb::t_ShardAccountBlocks.validate_ref(10000000, extra.account_blocks)) {
+  if (!block::tlb::t_ShardAccountBlocks.validate_ref(1000000000, extra.account_blocks)) {
     return reject_query("ShardAccountBlocks of the new block failed to pass handwritten validity tests");
   }
   in_msg_dict_ = std::make_unique<vm::AugmentedDictionary>(std::move(inmsg_cs), 256, block::tlb::aug_InMsgDescr);
@@ -2349,7 +2435,7 @@ bool ValidateQuery::precheck_one_account_update(td::ConstBitPtr acc_id, Ref<vm::
                         "AccountBlock for this account");
   }
   if (new_value.not_null()) {
-    if (!block::tlb::t_ShardAccount.validate_csr(10000, new_value)) {
+    if (!block::tlb::t_ShardAccount.validate_csr(10000000, new_value)) {
       return reject_query("new state of account "s + acc_id.to_hex(256) +
                           " failed to pass hand-written validity checks for ShardAccount");
     }
@@ -2499,10 +2585,10 @@ bool ValidateQuery::precheck_one_account_block(td::ConstBitPtr acc_id, Ref<vm::C
     return reject_query("(HASH_UPDATE Account) from the AccountBlock of "s + acc_id.to_hex(256) +
                         " has incorrect new hash");
   }
-  if (!block::gen::t_AccountBlock.validate_upto(1000000, *acc_blk_root)) {
+  if (!block::gen::t_AccountBlock.validate_upto(1000000000, *acc_blk_root)) {
     return reject_query("AccountBlock of "s + acc_id.to_hex(256) + " failed to pass automated validity checks");
   }
-  if (!block::tlb::t_AccountBlock.validate_upto(1000000, *acc_blk_root)) {
+  if (!block::tlb::t_AccountBlock.validate_upto(1000000000, *acc_blk_root)) {
     return reject_query("AccountBlock of "s + acc_id.to_hex(256) + " failed to pass hand-written validity checks");
   }
   unsigned last_trans_lt_len = 1;
@@ -2640,7 +2726,7 @@ bool ValidateQuery::precheck_one_message_queue_update(td::ConstBitPtr out_msg_id
     }
     ton::LogicalTime enqueued_lt = old_value->prefetch_ulong(64);
     if (enqueued_lt >= start_lt_) {
-      return reject_query(PSTRING() << "new EnqueuedMsg with key "s + out_msg_id.to_hex(352) + " has enqueued_lt="
+      return reject_query(PSTRING() << "old EnqueuedMsg with key "s + out_msg_id.to_hex(352) + " has enqueued_lt="
                                     << enqueued_lt << " greater than or equal to this block's start_lt=" << start_lt_);
     }
   }
@@ -3841,6 +3927,7 @@ bool ValidateQuery::check_processed_upto() {
   if (!ok) {
     return reject_query("new ProcessedInfo is not obtained from old ProcessedInfo by adding at most one new entry");
   }
+  processed_upto_updated_ = upd;
   if (upd) {
     if (upd->shard != shard_.shard) {
       return reject_query("newly-added ProcessedInfo entry refers to shard "s +
@@ -3887,16 +3974,8 @@ bool ValidateQuery::check_processed_upto() {
 // similar to Collator::process_inbound_message
 bool ValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> enq_msg, ton::LogicalTime lt,
                                                     td::ConstBitPtr key, const block::McShardDescr& nb,
-                                                    bool& unprocessed) {
+                                                    bool& unprocessed, bool& processed_here, td::Bits256& msg_hash) {
   unprocessed = false;
-  if (!block::gen::t_EnqueuedMsg.validate_csr(enq_msg)) {
-    return reject_query("EnqueuedMsg with key "s + key.to_hex(352) + " in outbound queue of our neighbor " +
-                        nb.blk_.to_str() + " failed to pass automated validity tests");
-  }
-  if (!block::tlb::t_EnqueuedMsg.validate_csr(enq_msg)) {
-    return reject_query("EnqueuedMsg with key "s + key.to_hex(352) + " in outbound queue of our neighbor " +
-                        nb.blk_.to_str() + " failed to pass hand-written validity tests");
-  }
   block::EnqueuedMsgDescr enq;
   if (!enq.unpack(enq_msg.write())) {  // unpack EnqueuedMsg
     return reject_query("cannot unpack EnqueuedMsg with key "s + key.to_hex(352) +
@@ -3916,6 +3995,8 @@ bool ValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> enq_msg, 
   auto out_entry = out_msg_dict_->lookup(key + 96, 256);
   bool f0 = ps_.processed_upto_->already_processed(enq);
   bool f1 = ns_.processed_upto_->already_processed(enq);
+  processed_here = f1 && !f0;
+  msg_hash = enq.hash_;
   if (f0 && !f1) {
     return fatal_error(
         "a previously processed message has been un-processed (impossible situation after the validation of "
@@ -4024,7 +4105,26 @@ bool ValidateQuery::check_neighbor_outbound_message(Ref<vm::CellSlice> enq_msg, 
 }
 
 bool ValidateQuery::check_in_queue() {
-  block::OutputQueueMerger nb_out_msgs(shard_, neighbors_);
+  int imported_messages_count = 0;
+  in_msg_dict_->check_for_each_extra([&](Ref<vm::CellSlice> value, Ref<vm::CellSlice>, td::ConstBitPtr, int) {
+    int tag = block::gen::t_InMsg.get_tag(*value);
+    if (tag == block::gen::InMsg::msg_import_fin || tag == block::gen::InMsg::msg_import_tr) {
+      ++imported_messages_count;
+    }
+    return true;
+  });
+  if (imported_messages_count == 0 && claimed_proc_lt_ == 0) {
+    return true;
+  }
+
+  std::vector<block::OutputQueueMerger::Neighbor> neighbor_queues;
+  for (const auto& descr : neighbors_) {
+    td::BitArray<96> key;
+    key.bits().store_int(descr.workchain(), 32);
+    (key.bits() + 32).store_uint(descr.shard().shard, 64);
+    neighbor_queues.emplace_back(descr.top_block_id(), descr.outmsg_root, descr.disabled_);
+  }
+  block::OutputQueueMerger nb_out_msgs(shard_, std::move(neighbor_queues));
   while (!nb_out_msgs.is_eof()) {
     auto kv = nb_out_msgs.extract_cur();
     CHECK(kv && kv->msg.not_null());
@@ -4035,7 +4135,10 @@ bool ValidateQuery::check_in_queue() {
       block::gen::t_EnqueuedMsg.print(std::cerr, *(kv->msg));
     }
     bool unprocessed = false;
-    if (!check_neighbor_outbound_message(kv->msg, kv->lt, kv->key.cbits(), neighbors_.at(kv->source), unprocessed)) {
+    bool processed_here = false;
+    td::Bits256 msg_hash;
+    if (!check_neighbor_outbound_message(kv->msg, kv->lt, kv->key.cbits(), neighbors_.at(kv->source), unprocessed,
+                                         processed_here, msg_hash)) {
       if (verbosity > 1) {
         std::cerr << "invalid neighbor outbound message: lt=" << kv->lt << " from=" << kv->source
                   << " key=" << kv->key.to_hex() << " msg=";
@@ -4044,13 +4147,18 @@ bool ValidateQuery::check_in_queue() {
       return reject_query("error processing outbound internal message "s + kv->key.to_hex() + " of neighbor " +
                           neighbors_.at(kv->source).blk_.to_str());
     }
+    if (processed_here) {
+      --imported_messages_count;
+    }
+    auto msg_lt = kv->lt;
+    if (imported_messages_count == 0 && msg_lt == claimed_proc_lt_ && msg_hash == claimed_proc_hash_) {
+      return true;
+    }
     if (unprocessed) {
-      inbound_queues_empty_ = false;
       return true;
     }
     nb_out_msgs.next();
   }
-  inbound_queues_empty_ = true;
   return true;
 }
 
@@ -4956,10 +5064,10 @@ bool ValidateQuery::check_new_state() {
 }
 
 bool ValidateQuery::check_config_update(Ref<vm::CellSlice> old_conf_params, Ref<vm::CellSlice> new_conf_params) {
-  if (!block::gen::t_ConfigParams.validate_csr(10000, new_conf_params)) {
+  if (!block::gen::t_ConfigParams.validate_csr(10000000, new_conf_params)) {
     return reject_query("new configuration failed to pass automated validity checks");
   }
-  if (!block::gen::t_ConfigParams.validate_csr(10000, old_conf_params)) {
+  if (!block::gen::t_ConfigParams.validate_csr(10000000, old_conf_params)) {
     return fatal_error("old configuration failed to pass automated validity checks");
   }
   td::Bits256 old_cfg_addr, new_cfg_addr;
@@ -5504,6 +5612,24 @@ bool ValidateQuery::postcheck_value_flow() {
   return true;
 }
 
+Ref<vm::Cell> ValidateQuery::get_virt_state_root(td::Bits256 block_root_hash) {
+  auto it = virt_roots_.find(block_root_hash);
+  if (it == virt_roots_.end()) {
+    return {};
+  }
+  Ref<vm::Cell> root = it->second;
+  block::gen::Block::Record block;
+  if (!tlb::unpack_cell(root, block)) {
+    return {};
+  }
+  vm::CellSlice upd_cs{vm::NoVmSpec(), block.state_update};
+  if (!(upd_cs.is_special() && upd_cs.prefetch_long(8) == 4  // merkle update
+        && upd_cs.size_ext() == 0x20228)) {
+    return {};
+  }
+  return vm::MerkleProof::virtualize_raw(upd_cs.prefetch_ref(1), {0, 1});
+}
+
 /*
  *
  *   MAIN VALIDATOR FUNCTION
@@ -5547,7 +5673,7 @@ bool ValidateQuery::try_validate() {
       }
     }
     LOG(INFO) << "running automated validity checks for block candidate " << id_.to_str();
-    if (!block::gen::t_Block.validate_ref(10000000, block_root_)) {
+    if (!block::gen::t_Block.validate_ref(1000000000, block_root_)) {
       return reject_query("block "s + id_.to_str() + " failed to pass automated validity checks");
     }
     if (!fix_all_processed_upto()) {
@@ -5611,7 +5737,7 @@ bool ValidateQuery::try_validate() {
   } catch (vm::VmError& err) {
     return fatal_error(-666, err.get_msg());
   } catch (vm::VmVirtError& err) {
-    return fatal_error(-666, err.get_msg());
+    return reject_query(err.get_msg());
   }
   return save_candidate();
 }

@@ -34,7 +34,7 @@ DownloadBlockNew::DownloadBlockNew(BlockIdExt block_id, adnl::AdnlNodeIdShort lo
                                    overlay::OverlayIdShort overlay_id, adnl::AdnlNodeIdShort download_from,
                                    td::uint32 priority, td::Timestamp timeout,
                                    td::actor::ActorId<ValidatorManagerInterface> validator_manager,
-                                   td::actor::ActorId<rldp::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
+                                   td::actor::ActorId<adnl::AdnlSenderInterface> rldp, td::actor::ActorId<overlay::Overlays> overlays,
                                    td::actor::ActorId<adnl::Adnl> adnl, td::actor::ActorId<adnl::AdnlExtClient> client,
                                    td::Promise<ReceivedBlock> promise)
     : block_id_(block_id)
@@ -57,7 +57,7 @@ DownloadBlockNew::DownloadBlockNew(adnl::AdnlNodeIdShort local_id, overlay::Over
                                    BlockIdExt prev_id, adnl::AdnlNodeIdShort download_from, td::uint32 priority,
                                    td::Timestamp timeout,
                                    td::actor::ActorId<ValidatorManagerInterface> validator_manager,
-                                   td::actor::ActorId<rldp::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
+                                   td::actor::ActorId<adnl::AdnlSenderInterface> rldp, td::actor::ActorId<overlay::Overlays> overlays,
                                    td::actor::ActorId<adnl::Adnl> adnl, td::actor::ActorId<adnl::AdnlExtClient> client,
                                    td::Promise<ReceivedBlock> promise)
     : local_id_(local_id)
@@ -201,10 +201,10 @@ void DownloadBlockNew::got_node_to_download(adnl::AdnlNodeIdShort node) {
   }
   if (client_.empty()) {
     td::actor::send_closure(overlays_, &overlay::Overlays::send_query_via, download_from_, local_id_, overlay_id_,
-                            "get_proof", std::move(P), td::Timestamp::in(15.0), std::move(q),
+                            "get_block_full", std::move(P), td::Timestamp::in(15.0), std::move(q),
                             FullNode::max_proof_size() + FullNode::max_block_size() + 128, rldp_);
   } else {
-    td::actor::send_closure(client_, &adnl::AdnlExtClient::send_query, "get_prepare",
+    td::actor::send_closure(client_, &adnl::AdnlExtClient::send_query, "get_block_full",
                             create_serialize_tl_object_suffix<ton_api::tonNode_query>(std::move(q)),
                             td::Timestamp::in(15.0), std::move(P));
   }

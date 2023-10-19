@@ -85,7 +85,7 @@ class ValidatorSessionImpl : public ValidatorSession {
 
   td::actor::ActorId<keyring::Keyring> keyring_;
   td::actor::ActorId<adnl::Adnl> adnl_;
-  td::actor::ActorId<rldp::Rldp> rldp_;
+  td::actor::ActorId<rldp2::Rldp> rldp_;
   td::actor::ActorId<overlay::Overlays> overlay_manager_;
   td::actor::ActorOwn<catchain::CatChain> catchain_;
   std::unique_ptr<ValidatorSessionDescription> description_;
@@ -156,17 +156,28 @@ class ValidatorSessionImpl : public ValidatorSession {
   bool started_ = false;
   bool catchain_started_ = false;
   bool allow_unsafe_self_blocks_resync_;
+  bool compress_block_candidates_ = false;
+  bool fast_cc_blocks_ = false;
 
   ValidatorSessionStats cur_stats_;
   void stats_init();
   void stats_add_round();
   void stats_set_candidate_status(td::uint32 round, PublicKeyHash src, int status);
 
+  void get_session_info(td::Promise<tl_object_ptr<ton_api::engine_validator_validatorSessionInfo>> promise) override;
+
+  void set_fast_cc_blocks(bool value) override {
+    // TODO: if used in production, use an appropriate condition here
+    if (description_->opts().proto_version >= 4) {
+      fast_cc_blocks_ = value;
+    }
+  }
+
  public:
   ValidatorSessionImpl(catchain::CatChainSessionId session_id, ValidatorSessionOptions opts, PublicKeyHash local_id,
                        std::vector<ValidatorSessionNode> nodes, std::unique_ptr<Callback> callback,
                        td::actor::ActorId<keyring::Keyring> keyring, td::actor::ActorId<adnl::Adnl> adnl,
-                       td::actor::ActorId<rldp::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
+                       td::actor::ActorId<rldp2::Rldp> rldp, td::actor::ActorId<overlay::Overlays> overlays,
                        std::string db_root, std::string db_suffix, bool allow_unsafe_self_blocks_resync);
   void start_up() override;
   void alarm() override;

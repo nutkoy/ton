@@ -209,6 +209,18 @@ class OverlayImpl : public Overlay {
       return vec;
     }
   }
+  std::vector<adnl::AdnlNodeIdShort> get_priority_broadcast_receivers(td::uint32 max_size = 0) const {
+    if (max_size == 0 || max_size >= priority_broadcast_receivers_.size()) {
+      return priority_broadcast_receivers_;
+    } else {
+      std::vector<adnl::AdnlNodeIdShort> vec;
+      for (td::uint32 i = 0; i < max_size; i++) {
+        vec.push_back(priority_broadcast_receivers_[td::Random::fast(
+            0, static_cast<td::int32>(priority_broadcast_receivers_.size()) - 1)]);
+      }
+      return vec;
+    }
+  }
   td::actor::ActorId<OverlayManager> overlay_manager() const {
     return manager_;
   }
@@ -261,6 +273,16 @@ class OverlayImpl : public Overlay {
       fpeer->ip_addr_str = ip_str;
     }
   }
+
+  void set_priority_broadcast_receivers(std::vector<adnl::AdnlNodeIdShort> nodes) override {
+    priority_broadcast_receivers_ = std::move(nodes);
+  }
+
+  void forget_peer(adnl::AdnlNodeIdShort peer_id) override {
+    del_peer(peer_id);
+  }
+
+  void wait_neighbours_not_empty(td::Promise<td::Unit> promise, int max_retries = 20);
 
  private:
   template <class T>
@@ -323,6 +345,7 @@ class OverlayImpl : public Overlay {
   std::queue<BroadcastHash> bcast_lru_;
 
   std::map<BroadcastHash, td::actor::ActorOwn<OverlayOutboundFecBroadcast>> out_fec_bcasts_;
+  std::vector<adnl::AdnlNodeIdShort> priority_broadcast_receivers_;
 
   void bcast_gc();
 

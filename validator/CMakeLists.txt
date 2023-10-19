@@ -43,6 +43,7 @@ set(VALIDATOR_HEADERS
   fabric.h
   interfaces/db.h
   interfaces/external-message.h
+  interfaces/out-msg-queue-proof.h
   interfaces/proof.h
   interfaces/shard.h
   interfaces/signature-set.h
@@ -53,6 +54,7 @@ set(VALIDATOR_HEADERS
   
   import-db-slice.hpp
 
+  collator-node.hpp
   manager-disk.h
   manager-disk.hpp
   manager-init.h
@@ -68,6 +70,7 @@ set(VALIDATOR_HEADERS
 set(VALIDATOR_SOURCE
   apply-block.cpp
   block-handle.cpp
+  collator-node.cpp
   get-next-key-blocks.cpp
   import-db-slice.cpp
   shard-client.cpp
@@ -189,7 +192,7 @@ target_include_directories(full-node PUBLIC
   ${OPENSSL_INCLUDE_DIR}
   )
 
-target_link_libraries(validator PRIVATE tdutils tdactor adnl rldp tl_api dht tdfec
+target_link_libraries(validator PRIVATE tdutils tdactor adnl rldp rldp2 tl_api dht tdfec
   overlay catchain validatorsession ton_crypto ton_block ton_db)
 
 target_link_libraries(validator-disk PRIVATE tdutils tdactor adnl rldp tl_api dht tdfec

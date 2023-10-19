@@ -51,6 +51,8 @@ using ValidatorSessionId = td::Bits256;
 constexpr WorkchainId masterchainId = -1, basechainId = 0, workchainInvalid = 0x80000000;
 constexpr ShardId shardIdAll = (1ULL << 63);
 
+constexpr int max_shard_pfx_len = 60;
+
 enum GlobalCapabilities {
   capIhrEnabled = 1,
   capCreateStatsEnabled = 2,
@@ -391,6 +393,9 @@ struct Ed25519_PublicKey {
   bool operator==(const Ed25519_PublicKey& other) const {
     return _pubkey == other._pubkey;
   }
+  bool operator!=(const Ed25519_PublicKey& other) const {
+    return _pubkey != other._pubkey;
+  }
   bool clear() {
     _pubkey.set_zero();
     return true;
@@ -471,6 +476,16 @@ struct ValidatorSessionConfig {
   bool new_catchain_ids = false;
 
   static const td::uint32 BLOCK_HASH_COVERS_DATA_FROM_VERSION = 2;
+};
+
+struct PersistentStateDescription : public td::CntObject {
+  BlockIdExt masterchain_id;
+  std::vector<BlockIdExt> shard_blocks;
+  UnixTime start_time, end_time;
+
+  virtual CntObject* make_copy() const {
+    return new PersistentStateDescription(*this);
+  }
 };
 
 }  // namespace ton

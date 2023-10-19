@@ -655,6 +655,12 @@ bool EnqueuedMsgDescr::check_key(td::ConstBitPtr key) const {
          hash_ == key + 96;
 }
 
+bool ImportedMsgQueueLimits::deserialize(vm::CellSlice& cs) {
+  return cs.fetch_ulong(8) == 0xd3           // imported_msg_queue_limits#d3
+         && cs.fetch_uint_to(32, max_bytes)  // max_bytes:#
+         && cs.fetch_uint_to(32, max_msgs);  // max_msgs:#
+}
+
 bool ParamLimits::deserialize(vm::CellSlice& cs) {
   return cs.fetch_ulong(8) == 0xc3            // param_limits#c3
          && cs.fetch_uint_to(32, limits_[0])  // underload:uint32
@@ -666,10 +672,16 @@ bool ParamLimits::deserialize(vm::CellSlice& cs) {
 }
 
 bool BlockLimits::deserialize(vm::CellSlice& cs) {
-  return cs.fetch_ulong(8) == 0x5d     // block_limits#5d
-         && bytes.deserialize(cs)      // bytes:ParamLimits
-         && gas.deserialize(cs)        // gas:ParamLimits
-         && lt_delta.deserialize(cs);  // lt_delta:ParamLimits
+  auto tag = cs.fetch_ulong(8);
+  if (tag != 0x5d && tag != 0x5e) {
+    return false;
+  }
+  // block_limits#5d
+  // block_limits_v2#5e
+  return bytes.deserialize(cs)                                    // bytes:ParamLimits
+         && gas.deserialize(cs)                                   // gas:ParamLimits
+         && lt_delta.deserialize(cs)                              // lt_delta:ParamLimits
+         && (tag == 0x5d || imported_msg_queue.deserialize(cs));  // imported_msg_queue:ImportedMsgQueueLimits
 }
 
 int ParamLimits::classify(td::uint64 value) const {
@@ -701,12 +713,19 @@ int BlockLimits::classify_lt(ton::LogicalTime lt) const {
   return lt_delta.classify(lt - start_lt);
 }
 
-int BlockLimits::classify(td::uint64 size, td::uint64 gas, ton::LogicalTime lt) const {
-  return std::max(std::max(classify_size(size), classify_gas(gas)), classify_lt(lt));
+int BlockLimits::classify_collated_data_size(td::uint64 size) const {
+  return bytes.classify(size);  // TODO: Maybe separate limits in config
 }
 
-bool BlockLimits::fits(unsigned cls, td::uint64 size, td::uint64 gas_value, ton::LogicalTime lt) const {
-  return bytes.fits(cls, size) && gas.fits(cls, gas_value) && lt_delta.fits(cls, lt - start_lt);
+int BlockLimits::classify(td::uint64 size, td::uint64 gas, ton::LogicalTime lt, td::uint64 collated_size) const {
+  return std::max(
+      {classify_size(size), classify_gas(gas), classify_lt(lt), classify_collated_data_size(collated_size)});
+}
+
+bool BlockLimits::fits(unsigned cls, td::uint64 size, td::uint64 gas_value, ton::LogicalTime lt,
+                       td::uint64 collated_size) const {
+  return bytes.fits(cls, size) && gas.fits(cls, gas_value) && lt_delta.fits(cls, lt - start_lt) &&
+         bytes.fits(cls, collated_size);
 }
 
 td::uint64 BlockLimitStatus::estimate_block_size(const vm::NewCellStorageStat::Stat* extra) const {
@@ -719,20 +738,22 @@ td::uint64 BlockLimitStatus::estimate_block_size(const vm::NewCellStorageStat::S
 }
 
 int BlockLimitStatus::classify() const {
-  return limits.classify(estimate_block_size(), gas_used, cur_lt);
+  return limits.classify(estimate_block_size(), gas_used, cur_lt, collated_data_stat.estimate_proof_size());
 }
 
 bool BlockLimitStatus::fits(unsigned cls) const {
   return cls >= ParamLimits::limits_cnt ||
          (limits.gas.fits(cls, gas_used) && limits.lt_delta.fits(cls, cur_lt - limits.start_lt) &&
-          limits.bytes.fits(cls, estimate_block_size()));
+          limits.bytes.fits(cls, estimate_block_size()) &&
+          limits.bytes.fits(cls, collated_data_stat.estimate_proof_size()));
 }
 
 bool BlockLimitStatus::would_fit(unsigned cls, ton::LogicalTime end_lt, td::uint64 more_gas,
                                  const vm::NewCellStorageStat::Stat* extra) const {
   return cls >= ParamLimits::limits_cnt || (limits.gas.fits(cls, gas_used + more_gas) &&
                                             limits.lt_delta.fits(cls, std::max(cur_lt, end_lt) - limits.start_lt) &&
-                                            limits.bytes.fits(cls, estimate_block_size(extra)));
+                                            limits.bytes.fits(cls, estimate_block_size(extra)) &&
+                                            limits.bytes.fits(cls, collated_data_stat.estimate_proof_size()));
 }
 
 // SETS: account_dict, shard_libraries_, mc_state_extra

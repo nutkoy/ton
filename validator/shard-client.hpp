@@ -42,7 +42,7 @@ class ShardClient : public td::actor::Actor {
 
   td::Promise<td::Unit> promise_;
 
-  std::set<ShardIdFull> created_overlays_;
+  std::set<ShardIdFull> shards_to_monitor_ = {ShardIdFull(masterchainId)};
 
  public:
   ShardClient(td::Ref<ValidatorManagerOptions> opts, BlockHandle masterchain_block_handle,
@@ -97,6 +97,8 @@ class ShardClient : public td::actor::Actor {
 
   void force_update_shard_client(BlockHandle handle, td::Promise<td::Unit> promise);
   void force_update_shard_client_ex(BlockHandle handle, td::Ref<MasterchainState> state, td::Promise<td::Unit> promise);
+
+  void update_options(td::Ref<ValidatorManagerOptions> opts);
 };
 
 }  // namespace validator

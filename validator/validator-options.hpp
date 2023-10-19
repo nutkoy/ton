@@ -32,11 +32,9 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
   BlockIdExt init_block_id() const override {
     return init_block_id_;
   }
-  bool need_monitor(ShardIdFull shard) const override {
-    return check_shard_(shard, 0, ShardCheckMode::m_monitor);
-  }
-  bool need_validate(ShardIdFull shard, CatchainSeqno cc_seqno) const override {
-    return check_shard_(shard, cc_seqno, ShardCheckMode::m_validate);
+  bool need_monitor(ShardIdFull shard, const td::Ref<MasterchainState>& state) const override {
+    td::uint32 min_split = state->monitor_min_split_depth(shard.workchain);
+    return check_shard_((td::uint32)shard.pfx_len() <= min_split ? shard : shard_prefix(shard, min_split));
   }
   bool allow_blockchain_init() const override {
     return allow_blockchain_init_;
@@ -114,6 +112,9 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
   std::string get_session_logs_file() const override {
     return session_logs_file_;
   }
+  ValidatorMode validator_mode() const override {
+    return validator_mode_;
+  }
 
   void set_zero_block_id(BlockIdExt block_id) override {
     zero_block_id_ = block_id;
@@ -121,7 +122,7 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
   void set_init_block_id(BlockIdExt block_id) override {
     init_block_id_ = block_id;
   }
-  void set_shard_check_function(std::function<bool(ShardIdFull, CatchainSeqno, ShardCheckMode)> check_shard) override {
+  void set_shard_check_function(std::function<bool(ShardIdFull)> check_shard) override {
     check_shard_ = std::move(check_shard);
   }
   void set_allow_blockchain_init(bool value) override {
@@ -167,17 +168,18 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
   void set_session_logs_file(std::string f) override {
     session_logs_file_ = std::move(f);
   }
+  void set_validator_mode(ValidatorMode value) override {
+    validator_mode_ = value;
+  }
 
   ValidatorManagerOptionsImpl *make_copy() const override {
     return new ValidatorManagerOptionsImpl(*this);
   }
 
   ValidatorManagerOptionsImpl(BlockIdExt zero_block_id, BlockIdExt init_block_id,
-                              std::function<bool(ShardIdFull, CatchainSeqno, ShardCheckMode)> check_shard,
-                              bool allow_blockchain_init, double sync_blocks_before,
-                              double block_ttl, double state_ttl, double max_mempool_num,
-                              double archive_ttl, double key_proof_ttl,
-                              bool initial_sync_disabled)
+                              std::function<bool(ShardIdFull)> check_shard, bool allow_blockchain_init,
+                              double sync_blocks_before, double block_ttl, double state_ttl, double max_mempool_num,
+                              double archive_ttl, double key_proof_ttl, bool initial_sync_disabled)
       : zero_block_id_(zero_block_id)
       , init_block_id_(init_block_id)
       , check_shard_(std::move(check_shard))
@@ -194,7 +196,7 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
  private:
   BlockIdExt zero_block_id_;
   BlockIdExt init_block_id_;
-  std::function<bool(ShardIdFull, CatchainSeqno, ShardCheckMode)> check_shard_;
+  std::function<bool(ShardIdFull)> check_shard_;
   bool allow_blockchain_init_;
   double sync_blocks_before_;
   double block_ttl_;
@@ -209,6 +211,7 @@ struct ValidatorManagerOptionsImpl : public ValidatorManagerOptions {
   BlockSeqno truncate_{0};
   BlockSeqno sync_upto_{0};
   std::string session_logs_file_;
+  ValidatorMode validator_mode_ = validator_normal;
 };
 
 }  // namespace validator

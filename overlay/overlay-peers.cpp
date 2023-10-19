@@ -24,7 +24,9 @@ namespace overlay {
 
 void OverlayImpl::del_peer(adnl::AdnlNodeIdShort id) {
   auto P = peers_.get(id);
-  CHECK(P != nullptr);
+  if (P == nullptr) {
+    return;
+  }
 
   VLOG(OVERLAY_DEBUG) << this << ": deleting peer " << id;
 
@@ -98,7 +100,7 @@ void OverlayImpl::add_peer_in(OverlayNode node) {
     return;
   }
   auto t = td::Clocks::system();
-  if (node.version() + 600 < t || node.version() > t + 60) {
+  if (node.version() + Overlays::overlay_peer_ttl() < t || node.version() > t + 60) {
     VLOG(OVERLAY_INFO) << this << ": ignoring node of too old version " << node.version();
     return;
   }
@@ -229,7 +231,7 @@ void OverlayImpl::update_neighbours(td::uint32 nodes_to_change) {
       continue;
     }
 
-    if (X->get_version() <= td::Clocks::system() - 600) {
+    if (X->get_version() <= td::Clocks::system() - Overlays::overlay_peer_ttl()) {
       if (X->is_neighbour()) {
         bool found = false;
         for (auto &n : neighbours_) {
